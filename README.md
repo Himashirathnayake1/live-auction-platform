@@ -15,9 +15,9 @@ It contains:
 The backend is authoritative. The browser only displays auction state and
 sends requests; it never decides whether a bid is valid or who wins.
 
-## Technical evaluation guide
 
-This section maps the assignment evaluation criteria to the implementation.
+
+
 
 | Evaluation area | How this project achieves it |
 | --- | --- |
@@ -31,16 +31,13 @@ This section maps the assignment evaluation criteria to the implementation.
 | Error handling | Validation errors, authorization failures, invalid lifecycle actions, rejected bids, duplicate requests, and network failures return useful HTTP responses and appear as dismissible toasts. |
 | Automated testing | Unit, feature, and true parallel HTTP/MySQL concurrency tests cover the core rules. Commands are listed in the testing section. |
 | Security | Sanctum bearer tokens, role checks on every admin endpoint, backend bid validation, private proxy maximums, masked public bidder names, idempotency keys, and mass-assignment protection are used. |
-| Code quality | Domain rules are centralized, migrations are versioned, setup is reproducible, and architecture/database diagrams are included in `docs`. |
+| Code quality | Domain rules are centralized, migrations are versioned, setup is reproducible. |
 
-Supporting diagrams:
 
-- [Database ER diagram](docs/database-er.md)
-- [Architecture diagram](docs/architecture.md)
 
 ## Project structure
 
-```text
+```
 C:\auction-platform
 ├── backend                 Laravel API and business logic
 │   ├── app\Models          Eloquent models
@@ -54,7 +51,7 @@ C:\auction-platform
 
 ## Requirements
 
-Install the following before starting:
+Need to Install the following before starting:
 
 - PHP 8.3 or newer
 - Composer
@@ -62,38 +59,20 @@ Install the following before starting:
 - MySQL 8 or compatible MariaDB
 - Node.js and npm
 
-Check the PHP MySQL extension on Windows:
 
-```powershell
-php -m | Select-String pdo_mysql
-```
-
-The command must print `pdo_mysql`.
-
-## Configuration: `.env` and `.env.example`
+## Configuration: `.env` 
 
 Laravel reads configuration from `backend/.env`.
 
-| File | Purpose | Commit? |
-| --- | --- | --- |
-| `backend/.env.example` | Safe template showing required variable names and development defaults. | Yes |
-| `backend/.env` | Machine-specific configuration, database credentials, and generated encryption key. | No |
+| `backend/.env` | Machine-specific configuration, database credentials, and generated encryption key. 
 
-Never commit `backend/.env`, `APP_KEY`, database passwords, bearer tokens, or
-other secrets. Copy the example file to create the local file:
 
-```powershell
+```
 cd C:\auction-platform\backend
-Copy-Item .env.example .env
 php artisan key:generate
 ```
 
-The default local timezone is `Asia/Kolkata`. Keep `APP_TIMEZONE` aligned with
-the timezone used when entering `datetime-local` values in the browser:
 
-```dotenv
-APP_TIMEZONE=Asia/Kolkata
-```
 
 ## Backend setup
 
@@ -190,7 +169,7 @@ validated by the API, but scheduled starts and automatic closes will not run.
 
 ## Frontend setup
 
-```powershell
+```
 cd C:\auction-platform\frontend
 npm install
 npm run dev
@@ -198,13 +177,13 @@ npm run dev
 
 Open the URL printed by Vite, normally:
 
-```text
+```
 http://localhost:5173
 ```
 
 The frontend defaults to:
 
-```text
+```
 http://localhost:8000/api
 ```
 
@@ -300,16 +279,12 @@ DRAFT → SCHEDULED → LIVE → COMPLETED
 Any non-completed auction can also be CANCELLED by an operational workflow.
 ```
 
-Current API-created auctions are created as `scheduled` or `live`; the
-database supports the broader lifecycle for future admin workflow screens.
+
 
 ### Starting an auction
 
 The scheduler changes a scheduled auction to live when:
 
-```text
-starts_at <= current server time
-```
 
 A bid request also promotes a due scheduled auction to live before validating
 the bid. This protects correctness if the scheduler is briefly delayed.
@@ -337,7 +312,7 @@ Calling close more than once is safe and does not create a second result.
 
 The backend calculates:
 
-```text
+```
 minimum acceptable bid =
 current price + applicable increment
 ```
@@ -355,7 +330,7 @@ When a bidder submits a maximum amount, the server stores it privately in
 
 Example:
 
-```text
+```
 Bidder A maximum: Rs. 20,000
 Bidder B maximum: Rs. 15,000
 Increment:       Rs.    500
@@ -363,7 +338,7 @@ Increment:       Rs.    500
 
 The resulting public price is:
 
-```text
+```
 Rs. 15,500
 ```
 
@@ -408,9 +383,7 @@ leader, or bid history.
 
 Clients should send an idempotency key:
 
-```text
-Idempotency-Key: 4f9c6e9e-2f85-4a9b-9d7e-example
-```
+
 
 The API also accepts `idempotency_key` in the JSON body. Retrying the same
 key for the same auction returns the original bid rather than processing a
@@ -428,7 +401,7 @@ Each auction has:
 If a valid bid arrives within the anti-sniping window and the extension limit
 has not been reached:
 
-```text
+```
 ends_at = ends_at + extension_seconds
 extensions_count = extensions_count + 1
 ```
@@ -772,11 +745,3 @@ Make sure the scheduler is running:
 ```powershell
 php artisan schedule:work
 ```
-
-Also verify that the server clock and `starts_at` / `ends_at` timezone values
-are correct. The default application timezone is `Asia/Kolkata`, configured
-with `APP_TIMEZONE` in `backend/.env`. The frontend `datetime-local` fields
-use this local timezone; do not append `Z` to those values. After changing
-`APP_TIMEZONE`, run `php artisan config:clear` and restart the Laravel server.
-#   l i v e - a u c t i o n - p l a t f o r m  
- 
