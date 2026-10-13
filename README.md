@@ -15,6 +15,29 @@ It contains:
 The backend is authoritative. The browser only displays auction state and
 sends requests; it never decides whether a bid is valid or who wins.
 
+## Technical evaluation guide
+
+This section maps the assignment evaluation criteria to the implementation.
+
+| Evaluation area | How this project achieves it |
+| --- | --- |
+| Correctness of auction logic | `AuctionService` validates lifecycle, bid amount, dynamic increment, reserve, anti-sniping, closing, and winner selection in one server-side domain service. |
+| Concurrency and race conditions | MySQL transactions plus `lockForUpdate()` lock the auction and proxy rows before recalculating price and leader. |
+| Automatic bidding algorithm | Private proxy maximums are stored in `proxy_bids`; the public price is only the minimum needed to beat the second-highest maximum and is capped at the leader's maximum. |
+| Database design and consistency | Foreign keys, decimal money columns, unique auction/idempotency keys, immutable bid records, proxy records, and audit events are defined by migrations. |
+| Backend architecture | Controllers handle HTTP validation/authentication; `AuctionService` owns auction rules; Eloquent models own relationships/casts; the scheduler handles lifecycle jobs. |
+| Real-time implementation | The React client polls the selected auction every three seconds and refreshes the lot list every five seconds. Countdown updates locally every second. |
+| React application structure | `App.tsx` contains authentication, auction list/detail state, bid flow, admin management, polling, countdown, and toast notifications; `App.css` contains responsive UI styles. |
+| Error handling | Validation errors, authorization failures, invalid lifecycle actions, rejected bids, duplicate requests, and network failures return useful HTTP responses and appear as dismissible toasts. |
+| Automated testing | Unit, feature, and true parallel HTTP/MySQL concurrency tests cover the core rules. Commands are listed in the testing section. |
+| Security | Sanctum bearer tokens, role checks on every admin endpoint, backend bid validation, private proxy maximums, masked public bidder names, idempotency keys, and mass-assignment protection are used. |
+| Code quality | Domain rules are centralized, migrations are versioned, setup is reproducible, and architecture/database diagrams are included in `docs`. |
+
+Supporting diagrams:
+
+- [Database ER diagram](docs/database-er.md)
+- [Architecture diagram](docs/architecture.md)
+
 ## Project structure
 
 ```text
@@ -47,21 +70,29 @@ php -m | Select-String pdo_mysql
 
 The command must print `pdo_mysql`.
 
-## Configuration: `.env`
+## Configuration: `.env` and `.env.example`
 
 Laravel reads configuration from `backend/.env`.
 
 | File | Purpose | Commit? |
 | --- | --- | --- |
+| `backend/.env.example` | Safe template showing required variable names and development defaults. | Yes |
+| `backend/.env` | Machine-specific configuration, database credentials, and generated encryption key. | No |
 
-| `backend/.env` | Local configuration with credentials and generated encryption key. | No |
-`.env`,it has the generated `APP_KEY`.
-
-If `backend/.env` does not exist:
+Never commit `backend/.env`, `APP_KEY`, database passwords, bearer tokens, or
+other secrets. Copy the example file to create the local file:
 
 ```powershell
 cd C:\auction-platform\backend
+Copy-Item .env.example .env
 php artisan key:generate
+```
+
+The default local timezone is `Asia/Kolkata`. Keep `APP_TIMEZONE` aligned with
+the timezone used when entering `datetime-local` values in the browser:
+
+```dotenv
+APP_TIMEZONE=Asia/Kolkata
 ```
 
 ## Backend setup
@@ -101,7 +132,7 @@ DB_PASSWORD=
 The application also uses the database for sessions, cache, and queues in the
 default local configuration. Run migrations before starting the scheduler.
 
-### 3. Install dependencies and migrate
+### 3. Install dependencies, configure, and migrate
 
 ```powershell
 cd C:\auction-platform\backend
@@ -109,6 +140,11 @@ composer install
 php artisan config:clear
 php artisan migrate --seed
 ```
+
+`migrate --seed` is the normal first-time setup command and preserves existing
+tables/data. To completely reset a disposable local database, use
+`php artisan migrate:fresh --seed`; it drops all tables, so never run it
+against a shared or production database.
 
 The seed creates these demo users:
 
@@ -171,6 +207,36 @@ The frontend defaults to:
 ```text
 http://localhost:8000/api
 ```
+
+If the API runs at another URL, create `frontend/.env.local`:
+
+```dotenv
+VITE_API_URL=http://127.0.0.1:8000/api
+```
+
+Restart Vite after changing it.
+
+### Correct startup order
+
+Use three PowerShell terminals:
+
+```powershell
+# Terminal 1: API
+cd C:\auction-platform\backend
+php artisan serve --host=127.0.0.1 --port=8000
+
+# Terminal 2: lifecycle scheduler
+cd C:\auction-platform\backend
+php artisan schedule:work
+
+# Terminal 3: React
+cd C:\auction-platform\frontend
+npm run dev
+```
+
+The scheduler is required for automatic scheduled starts and normal automatic
+closing. The API also synchronizes due/expired state when auction endpoints
+are accessed, but it should not replace the scheduler in a real deployment.
 
 
 ## Complete user workflows
@@ -377,12 +443,18 @@ The reserve price is private from bidders.
 
 At closing:
 
-- If there is a leader and the current price reaches the reserve:
+- If the highest private proxy maximum reaches the reserve:
   - `result = sold`
   - `winner_id` is set
 - Otherwise:
   - `result = reserve_not_met`
   - `winner_id` remains null
+
+The public current price can be lower than the reserve when the winning
+bidder's private maximum meets the reserve. This is intentional proxy-bidding
+behavior: a maximum of Rs. 8,000 does not automatically publish Rs. 8,000.
+The closing transaction recomputes the highest proxy maximum instead of
+trusting a stale cached leader.
 
 ## Authentication and authorization
 
@@ -395,6 +467,8 @@ Authorization: Bearer <sanctum-token>
 Admin-only actions:
 
 - Create an auction
+- Edit draft or scheduled auctions
+- Cancel non-completed auctions
 - Manually close an auction
 
 Bidder actions:
@@ -441,7 +515,10 @@ Login request:
 ```http
 POST /api/logout
 POST /api/auctions
+PATCH /api/auctions/{auction}
 POST /api/auctions/{auction}/bids
+POST /api/auctions/{auction}/cancel
+POST /api/auctions/{auction}/close
 POST /api/auctions/{auction}/close
 ```
 
@@ -541,19 +618,26 @@ auction events without changing the bidding transaction.
 
 ## Testing and validation
 
-Run backend tests:
+### Test matrix
+
+| Test area | Location | What it verifies |
+| --- | --- | --- |
+| Increment calculation | `tests/Unit/AuctionServiceTest.php` | Price-tier selection and fallback increment |
+| Proxy bidding | `tests/Feature/AuctionBiddingTest.php` | Private maximums, competing bidders, public price, reserve, winner, idempotency, closing, and anti-sniping |
+| HTTP concurrency | `tests/Concurrency/ConcurrentBiddingHttpTest.php` | Three simultaneous real HTTP requests against MySQL, deterministic leader, accepted/rejected count, and row consistency |
+
+Run the non-database unit suite:
 
 ```powershell
 cd C:\auction-platform\backend
-php artisan test
+php artisan test --testsuite=Unit
 ```
 
-The test suite includes increment-rule unit coverage and database-backed
-coverage for proxy bidding, idempotency, reserve-price winner selection,
-auction closing, and anti-sniping. Database-backed tests require the PHP
-database driver configured by `phpunit.xml` (SQLite by default in the
-development scaffold); for concurrency behavior use an isolated MySQL test
-database.
+The feature tests use `RefreshDatabase` and require a database driver. The
+default `phpunit.xml` is configured for an in-memory SQLite database, so
+install/enable `pdo_sqlite`, or create a separate PHPUnit configuration that
+points to an isolated MySQL test database. Never point `RefreshDatabase` tests
+at a shared or production database.
 
 Run frontend checks:
 
@@ -608,6 +692,41 @@ accepted, one is rejected by the authoritative minimum, the final price is
 Rs. 51,500, there is one deterministic leader, and only two proxy/bid rows
 exist. Do not run this suite against a shared or production database because
 the test uses `RefreshDatabase`.
+
+## Security checklist
+
+For local setup:
+
+- Keep `backend/.env` out of version control.
+- Generate a unique `APP_KEY` with `php artisan key:generate`.
+- Use a dedicated MySQL user/database instead of a production account.
+- Use demo credentials only for local development.
+
+At runtime:
+
+- Login/register issue Laravel Sanctum tokens.
+- Protected routes use `auth:sanctum`.
+- Admin actions verify `users.role = admin` on the backend.
+- Bid correctness never depends on React validation.
+- Proxy maximums are not returned in public auction or bid-history responses.
+- Public bid history masks bidder names.
+- Duplicate requests are controlled by a unique auction/idempotency key.
+- Money is stored as fixed-precision decimal values, not floating-point
+  database columns.
+- Production deployments should set `APP_DEBUG=false`, use HTTPS, rotate
+  secrets, restrict CORS, and use a least-privilege database account.
+
+## Code quality and maintainability
+
+- Keep auction rules in `backend/app/Services/AuctionService.php`; controllers
+  should remain HTTP/authentication adapters.
+- Add or update a focused test whenever a bidding rule changes.
+- Run `php -l` on changed PHP files, backend tests, `npm run lint`, and
+  `npm run build` before submitting changes.
+- Keep migrations backward-compatible for deployed databases and do not edit
+  an already-applied migration to change production data.
+- Use audit events to explain state transitions instead of relying only on the
+  current auction row.
 
 ## Troubleshooting
 
